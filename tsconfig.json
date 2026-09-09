@@ -21,6 +21,10 @@
     "src/presets.ts",
     "src/command.ts",
     "src/types.ts",
+    "src/skills-runtime.ts",
+    "src/skills/types.ts",
+    "src/skills/parse.ts",
+    "src/skills/register.ts",
     "tests"
   ],
   "exclude": [

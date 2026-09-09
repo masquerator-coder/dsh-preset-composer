@@ -1,12 +1,24 @@
 # dsh-preset-composer bundle layer.
 #
 # Applied when a profile lists this bundle (dsh plugin add dsh-preset-composer).
-# The single row mounts the Host half (lib/index.mjs), which registers the
-# `preset-composer` settings namespace and the `/preset-composer` slash command
-# that edits preset files. There is deliberately no browser (client) half yet:
-# DSH does not currently expose a client-bundle build channel for an out-of-tree
-# plugin, so this package ships Host-only until that channel exists (the
-# reserved client sources under src/client/ are not part of this build).
+# The single row mounts the Host half (lib/index.mjs), which:
+#   · registers the `/preset-composer` slash command (read/edit preset name,
+#     description, persona prompt, skills, plugins); and
+#   · runs the preset-skills runtime: each agent preset's own `skills/`
+#     directory is registered as discoverable, preset-isolated skills for any
+#     agent running that preset (agent/created + agent-preset/selected).
+# There is deliberately no browser (client) half yet: DSH does not currently
+# expose a client-bundle build channel for an out-of-tree plugin, so this
+# package ships Host-only until that channel exists (the reserved client
+# sources under src/client/ are not part of this build).
 - insert:
     - id: preset-composer
       name: 'dsh-preset-composer'
+      config:
+        # DSH_HOME override for the skills runtime (marker log / roster).
+        # Defaults to $DSH_HOME or ~/.dsh.
+        # dshHome: C:/Users/fuqia/.dsh
+        # Skills marker log path; default <DSH_HOME>/dsh-preset-composer.log
+        # logFile: C:/Users/fuqia/.dsh/dsh-preset-composer.log
+        # Append candidate-event probes to the marker log (diagnostic noise).
+        # debug: false

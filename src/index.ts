@@ -52,11 +52,38 @@ import {
   type SkillRow,
 } from './types.ts'
 import { parsePresetCommand, renderConfig, tokenize } from './command.ts'
+import { installComposerSkillsRuntime, type SkillsRuntimeOptions } from './skills-runtime.ts'
 
 export const name = 'preset-composer'
 
 /** Services the plugin body needs on the host. */
 export const inject = ['commands', 'agentPresets', 'settings']
+
+/** Combined plugin config: the `/preset-composer` editor + preset-skills runtime. */
+export const Config = z.object({
+  // Schemastery object fields are OPTIONAL by default — no `.optional()` method
+  // exists (zod-style chaining throws at module load). Use `.default(...)` to
+  // auto-fill when absent; `apply` reads absent keys as undefined.
+  /** DSH_HOME override for the skills runtime (marker log / roster). Defaults to `$DSH_HOME` or `~/.dsh`. */
+  dshHome: z.string(),
+  /** Skills marker log path override; defaults to `<DSH_HOME>/dsh-preset-composer.log`. */
+  logFile: z.string(),
+  /** Append candidate-event probes to the marker log (diagnostic noise). */
+  debug: z.boolean().default(false),
+})
+
+/** Editor + skills-runtime config accepted by `apply`. */
+export interface ComposerConfig {
+  dshHome?: string
+  logFile?: string
+  debug?: boolean
+}
+
+const runtimeOptions = (config: ComposerConfig = {}): SkillsRuntimeOptions => ({
+  dshHome: config.dshHome,
+  logFile: config.logFile,
+  debug: config.debug ?? false,
+})
 
 /** Command name without the leading slash. */
 const COMMAND = 'preset-composer'
@@ -98,7 +125,13 @@ const SettingsSchema = z.object({
 /* ------------------------------------------------------------------ */
 
 /** Plugin entry point. */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: ComposerConfig = {}): void {
+  // Preset-skills runtime: register each agent preset's own skills/ into its
+  // agent scope (agent/created + agent-preset/selected convergence). Runs
+  // independently of the editor's inject gate — it needs only lazy service
+  // reads, so skills stay available even if commands/settings aren't present.
+  installComposerSkillsRuntime(ctx, runtimeOptions(config))
+
   ctx.inject(inject, (scoped) => {
     const service = new PresetComposerService(scoped)
     void service.start()
