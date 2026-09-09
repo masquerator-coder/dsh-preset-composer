@@ -1,0 +1,13 @@
+# dsh-preset-composer bundle layer.
+#
+# Applied when a profile lists this bundle (dsh plugin add dsh-preset-composer).
+# The single row mounts BOTH halves of this package:
+#   - the node half (lib/index.js) registers the `preset-composer` settings
+#     namespace and applies browser edits back to the preset files;
+#   - because the package declares `dsh.client`, the same row's browser half
+#     (lib/client.js) is served to the web shell, where it renders the
+#     "配置" action button into the Agent-presets cards' card-action child slot.
+
+- insert:
+    - id: preset-composer
+      name: 'dsh-preset-composer'
