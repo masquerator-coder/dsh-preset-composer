@@ -1,17 +1,25 @@
 /**
  * dsh-preset-composer — Host half.
  *
- * Gives each user-authored agent preset a graphical config surface over the
- * `preset-composer` settings namespace: display name/description (preset.yml),
- * the persona prefix (预设提示词), the skills under `<preset>/skills`, and the
- * non-structural plugin rows of `agent.cordis.yml`. The Host is the only
- * writer of preset files; the browser edits the settings namespace and this
- * plugin applies each committed change back to disk.
+ * Pure-host preset configuration surface. DSH does not (yet) expose a build
+ * channel for a third-party plugin's client half, so this plugin is a Host-only
+ * package: it registers the `/preset-composer` slash command (via the
+ * pure-node `ctx.commands` registry — no client bundle required) to read and
+ * edit each user-authored agent preset's name/description (preset.yml), persona
+ * prefix (预设提示词), skills (`skills/`), and non-structural plugin rows
+ * (`agent.cordis.yml`).
+ *
+ * The Host remains the only writer of preset files. It also mirrors every
+ * editable preset into the `preset-composer` settings namespace at startup and
+ * keeps that mirror in sync on every command edit, so a future client half
+ * (which will need a DSH-provided browser-bundle build channel, tracked for
+ * upstream) can read the same shape through the built-in `remote.settings`
+ * surface without a new Remote API.
  *
  * Startup safety: the whole body runs inside a conditional `ctx.inject` over
- * `agentPresets` and `settings`, so a deployment that composes neither simply
- * never activates this plugin; every filesystem operation is contained and
- * logged, and `apply` never throws.
+ * `commands`, `agentPresets`, and `settings`, so a deployment that composes
+ * none of them simply never activates this plugin; every filesystem operation
+ * is contained and logged, and no handler throws.
  */
 
 import { dirname, join } from 'node:path'
@@ -22,6 +30,7 @@ import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-settings'
 import type { AgentPreset } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-agent-presets'
+import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import * as yaml from 'js-yaml'
 import {
   METADATA_FILE,
@@ -42,8 +51,19 @@ import {
   type PresetConfig,
   type SkillRow,
 } from './types.ts'
+import { parsePresetCommand, renderConfig, tokenize } from './command.ts'
 
 export const name = 'preset-composer'
+
+/** Services the plugin body needs on the host. */
+export const inject = ['commands', 'agentPresets', 'settings']
+
+/** Command name without the leading slash. */
+const COMMAND = 'preset-composer'
+const USAGE =
+  'Usage: /preset-composer <id> | /preset-composer <id> name <name> | '
+  + '/preset-composer <id> prompt <prompt> | /preset-composer <id> skill <name> on|off '
+  + '| /preset-composer <id> plugin <name> on|off|add:<spec>'
 
 /* ------------------------------------------------------------------ */
 /* Settings schema                                                     */
@@ -79,13 +99,19 @@ const SettingsSchema = z.object({
 
 /** Plugin entry point. */
 export function apply(ctx: Context): void {
-  ctx.inject(['agentPresets', 'settings'], (scoped) => {
+  ctx.inject(inject, (scoped) => {
     const service = new PresetComposerService(scoped)
     void service.start()
+    const dispose = scoped.commands.register({
+      name: COMMAND,
+      description: 'Configure a user agent preset (name, prompt, skills, plugins)',
+      handler: (invocation) => service.handle(invocation),
+    })
+    scoped.on('dispose', dispose)
   })
 }
 
-/** Owns the settings namespace mirror and applies browser edits to files. */
+/** Owns the settings namespace mirror, applies edits to files, and serves `/preset-composer`. */
 class PresetComposerService {
   /** True while `seed()` writes the namespace, so its own event is ignored. */
   private seeding = false
@@ -115,9 +141,142 @@ class PresetComposerService {
     }
   }
 
-  private async seed(): Promise<void> {
-    const presets = (await this.ctx.agentPresets.list())
+  /**
+   * Dispatch one `/preset-composer` invocation.
+   * @returns a human-facing command result; never throws.
+   */
+  async handle(invocation: CommandInvocation): Promise<CommandResult> {
+    try {
+      const { id, verb, args } = parsePresetCommand(invocation.rawInput)
+      if (verb === undefined) {
+        return id === '' ? await this.listAll() : await this.show(id)
+      }
+      switch (verb) {
+        case 'name':
+          return await this.setName(id, args.join(' '))
+        case 'prompt':
+          return await this.setPrompt(id, args.join(' '))
+        case 'skill':
+          return await this.setSkill(id, args)
+        case 'plugin':
+          return await this.setPlugin(id, args)
+        default:
+          return { kind: 'error', text: `Unknown verb "/${COMMAND} ${verb}". ${USAGE}` }
+      }
+    } catch (error) {
+      return { kind: 'error', text: describeError(error) }
+    }
+  }
+
+  /** List every editable preset id and its display name. */
+  private async listAll(): Promise<CommandResult> {
+    const presets = await this.editablePresets()
+    if (presets.length === 0) {
+      return { kind: 'success', text: 'No user-editable agent presets found.' }
+    }
+    const lines = presets.map(preset => `${preset.id}  —  ${preset.name ?? preset.id}`)
+    return { kind: 'success', text: `Editable agent presets:\n${lines.join('\n')}` }
+  }
+
+  /** Show one preset's current config. */
+  private async show(id: string): Promise<CommandResult> {
+    const preset = await this.resolveEditable(id)
+    if (preset === undefined) return { kind: 'error', text: `No user-editable preset "${id}".` }
+    const config = await readPresetConfig(preset)
+    return { kind: 'success', text: renderConfig(id, config) }
+  }
+
+  /** Set a preset's display name. */
+  private async setName(id: string, value: string): Promise<CommandResult> {
+    const value2 = value.trim()
+    if (value2 === '') return { kind: 'error', text: `Usage: /${COMMAND} ${id} name <name>` }
+    return this.mutate(id, async (config) => ({ ...config, name: value2 }))
+  }
+
+  /** Set a preset's persona prefix (预设提示词). */
+  private async setPrompt(id: string, value: string): Promise<CommandResult> {
+    return this.mutate(id, async (config) => ({ ...config, prompt: value }))
+  }
+
+  /** Enable/disable one skill under a preset. */
+  private async setSkill(id: string, args: readonly string[]): Promise<CommandResult> {
+    const name = args[0]
+    const flag = args[1]?.toLowerCase()
+    if (name === undefined || (flag !== 'on' && flag !== 'off')) {
+      return { kind: 'error', text: `Usage: /${COMMAND} ${id} skill <name> on|off` }
+    }
+    return this.mutate(id, async (config) => ({
+      ...config,
+      skills: config.skills.map(skill =>
+        skill.name === name ? { ...skill, enabled: flag === 'on' } : skill),
+    }), (config) => config.skills.some(skill => skill.name === name))
+  }
+
+  /** Enable/disable a plugin row, or add a new one (`add:<spec>`). */
+  private async setPlugin(id: string, args: readonly string[]): Promise<CommandResult> {
+    const raw = args[0]
+    const flag = args[1]?.toLowerCase()
+    if (raw === undefined) {
+      return { kind: 'error', text: `Usage: /${COMMAND} ${id} plugin <name> on|off|add:<spec>` }
+    }
+    if (flag !== undefined && (flag === 'on' || flag === 'off')) {
+      return this.mutate(id, async (config) => ({
+        ...config,
+        plugins: config.plugins.map(plugin =>
+          plugin.name === raw ? { ...plugin, enabled: flag === 'on' } : plugin),
+      }), (config) => config.plugins.some(plugin => plugin.name === raw))
+    }
+    const addMatch = /^(?:add):(\S+)$/.exec(raw)
+    if (addMatch !== null) {
+      const spec = addMatch[1]!
+      return this.mutate(id, async (config) => ({
+        ...config,
+        plugins: config.plugins.some(plugin => plugin.name === spec)
+          ? config.plugins
+          : [...config.plugins, { id: spec, name: spec, enabled: true }],
+      }))
+    }
+    return { kind: 'error', text: `Usage: /${COMMAND} ${id} plugin <name> on|off|add:<spec>` }
+  }
+
+  /**
+   * Apply a classifier edit to one preset's in-memory config, write it to disk,
+   * and refresh the namespace mirror. `guard` (when supplied) skips the write
+   * when the edit is a no-op for the current config.
+   */
+  private async mutate(
+    id: string,
+    edit: (config: PresetConfig) => Promise<PresetConfig>,
+    guard?: (config: PresetConfig) => boolean,
+  ): Promise<CommandResult> {
+    const preset = await this.resolveEditable(id)
+    if (preset === undefined) return { kind: 'error', text: `No user-editable preset "${id}".` }
+    const current = await readPresetConfig(preset)
+    if (guard !== undefined && guard(current)) {
+      return { kind: 'success', text: `No-op: ${id} already matches that setting.` }
+    }
+    const next = await edit(current)
+    await applyPresetConfig(this.ctx, id, next)
+    await this.refreshOne(id)
+    return { kind: 'success', text: `Updated preset "${id}".\n${renderConfig(id, next)}` }
+  }
+
+  /** List only `trust === 'user'` (non-broken) presets. */
+  private async editablePresets(): Promise<AgentPreset[]> {
+    return (await this.ctx.agentPresets.list())
       .filter(preset => preset.trust === 'user' && preset.broken === undefined)
+  }
+
+  /** Resolve one preset by id, accepting only editable ones. */
+  private async resolveEditable(id: string): Promise<AgentPreset | undefined> {
+    const preset = await this.ctx.agentPresets.resolve(id)
+    if (preset.trust !== 'user' || preset.broken !== undefined) return undefined
+    return preset
+  }
+
+  /** Read every user preset's files into the namespace once at startup. */
+  private async seed(): Promise<void> {
+    const presets = await this.editablePresets()
     const presetsById: Record<string, PresetConfig> = {}
     for (const preset of presets) {
       try {
@@ -129,6 +288,27 @@ class PresetComposerService {
     this.seeding = true
     try {
       await this.scope.replace({ presets: presetsById })
+    } finally {
+      this.seeding = false
+    }
+  }
+
+  /** Re-read one preset into the mirror after a command-driven edit. */
+  private async refreshOne(id: string): Promise<void> {
+    const preset = await this.resolveEditable(id)
+    if (preset === undefined) return
+    let config: PresetConfig | undefined
+    try {
+      config = await readPresetConfig(preset)
+    } catch (error) {
+      this.ctx.logger.warn(`preset-composer: refresh preset "${id}" failed: ${describeError(error)}`)
+      return
+    }
+    this.seeding = true
+    try {
+      // `update` is a deep merge, so this patches only `presets.<id>` and keeps
+      // every other preset row in the mirror intact.
+      await this.scope.update({ presets: { [id]: config } })
     } finally {
       this.seeding = false
     }
@@ -286,5 +466,7 @@ export {
   PluginRowSchema,
   SettingsSchema,
   SkillRowSchema,
+  tokenize,
 }
+export { parsePresetCommand, renderConfig } from './command.ts'
 export type { PresetComposerSettings, PresetConfig, PluginRow, SkillRow }

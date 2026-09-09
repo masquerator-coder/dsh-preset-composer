@@ -1,6 +1,6 @@
 {
   "name": "dsh-preset-composer",
-  "description": "Graphical editor for custom agent presets: name, description, preset prompt, skills, and plugins (child-slot configure button in the Agent presets section).",
+  "description": "Host-only custom agent preset editor via the /preset-composer slash command: name, description, preset prompt, skills, and plugins. A client UI (child-slot configure button) is reserved for future DSH support of out-of-tree client bundles.",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.mjs",
@@ -10,25 +10,10 @@
       "types": "./lib/index.d.mts",
       "default": "./lib/index.mjs"
     },
-    "./client": {
-      "types": "./lib/types/client/index.d.ts",
-      "default": "./lib/client.js"
-    },
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "dsh": {
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-api-remotes",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-agent-preset",
-        "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-slots"
-      ],
-      "platform": "web"
-    },
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
@@ -49,6 +34,7 @@
     "vitest": "^2.1.0",
     "tsdown": "^0.23.0",
     "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
     "react": "^18.2.0",
     "@types/react": "~18.3.1"
   },

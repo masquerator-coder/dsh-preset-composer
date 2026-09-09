@@ -17,6 +17,18 @@
     "types": ["node"]
   },
   "include": [
-    "src"
+    "src/index.ts",
+    "src/presets.ts",
+    "src/command.ts",
+    "src/types.ts",
+    "tests"
+  ],
+  "exclude": [
+    // src/client is a reserved future browser half. It is NOT part of the
+    // current Host-only build: DSH does not yet expose a client-bundle channel
+    // for out-of-tree plugins, and these sources require @deepseek-ai/dsh-client-*
+    // types that this package does not install. Keep them as the authoritative
+    // reference for the future client UI, but out of the host type surface.
+    "src/client"
   ]
 }
